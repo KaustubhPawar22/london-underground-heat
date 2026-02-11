@@ -1,0 +1,295 @@
+---
+title: "London Underground Heat Exposure — Infrastructure Analytics Case Study"
+author: "Kaustubh Pawar"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    theme: cosmo
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(broom)
+library(gt)
+library(effsize)
+```
+
+# Executive Summary
+
+London’s deep-level Underground lines experience sustained thermal stress, impacting passenger comfort and long-term infrastructure resilience.
+
+This portfolio case study evaluates historical monthly temperature data to guide where a pilot air-cooling system should be deployed.
+
+After structured data validation, statistical outlier handling, exploratory analysis, and inferential testing:
+
+- Bakerloo and Central Lines exhibit the highest sustained temperatures.
+- The annual mean difference between Bakerloo and Central is approximately **0.7°C** (statistically significant but practically modest).
+- Effect size is small (Cohen’s d = 0.26).
+- During peak summer months, no statistically significant difference exists.
+
+**Recommendation:** While Bakerloo is marginally warmer annually, heat exposure appears structurally driven across deep-level lines. A pilot may begin on Bakerloo, but meaningful passenger impact will likely require broader multi-line intervention.
+
+---
+
+# Business Context
+
+Deep-level Underground lines retain heat due to tunnel depth, limited ventilation, and rolling stock heat accumulation. Transport planners must prioritise infrastructure investments under constrained budgets.
+
+This analysis answers:
+
+- Which lines experience the highest heat exposure?
+- Are Bakerloo and Central meaningfully different?
+- Where should cooling be piloted for maximum passenger benefit?
+
+Dataset sourced from Kaggle (compiled from TfL monitoring reports) and used here for portfolio demonstration.
+
+---
+
+# Data Dictionary
+
+| Column | Description |
+|--------|-------------|
+| ID | Observation identifier |
+| Year | Year of observation |
+| Month | Month |
+| Line | Underground line |
+| Temp | Monthly average temperature (°C) |
+
+---
+
+# Part 1 — Reproducible Analytics Pipeline
+
+## Load Data
+
+We begin by loading the dataset and inspecting its structure. Explicit removal of missing temperature values ensures downstream calculations are not affected.
+
+```{r}
+df <- readr::read_csv("underground.csv") %>%
+  drop_na(Temp)
+
+glimpse(df)
+```
+
+**Result:** Dataset contains monthly temperature observations across Underground lines with no remaining missing temperature values.
+
+---
+
+## Initial Data Integrity Checks
+
+Before analysis, we assess basic data quality: descriptive statistics, remaining missing values, and duplicate rows.
+
+```{r}
+summary(df)
+sum(is.na(df))
+nrow(df) - nrow(distinct(df))
+```
+
+**Result:** No material duplication detected and all temperature fields populated.
+
+---
+
+## Month Ordering
+
+Months are converted to ordered factors to preserve seasonal sequencing in later analysis and visualisation.
+
+```{r}
+df$Month <- factor(df$Month,
+levels=c("January","February","March","April","May","June","July","August",
+"September","October","November","December"),
+ordered=TRUE)
+```
+
+---
+
+## Preliminary Outlier Visualisation
+
+A scatter plot by month provides an initial visual inspection for anomalous sensor readings.
+
+```{r}
+ggplot(df, aes(x=Month,y=Temp))+
+geom_point(alpha=.3)
+```
+
+**Observation:** Extreme values (>200°C) indicate sensor artefacts and require formal removal.
+
+---
+
+## Statistical Outlier Removal (IQR Method)
+
+Outliers are identified using the standard 1.5×IQR rule. This statistical approach removes extreme artefacts while preserving realistic temperature variability.
+
+```{r}
+Q1 <- quantile(df$Temp, 0.25)
+Q3 <- quantile(df$Temp, 0.75)
+IQR_val <- Q3 - Q1
+
+lower <- Q1 - 1.5*IQR_val
+upper <- Q3 + 1.5*IQR_val
+
+df_clean <- df %>% filter(Temp >= lower & Temp <= upper)
+
+summary(df_clean$Temp)
+```
+
+**Result:** Temperatures now fall within plausible Underground operating ranges.
+
+---
+
+## Distribution Overview
+
+We inspect the cleaned temperature distribution to assess approximate normality, supporting the use of parametric tests such as Welch’s t-test.
+
+```{r}
+ggplot(df_clean,aes(x=Temp))+
+geom_histogram(bins=30,fill="steelblue",alpha=.7)
+```
+
+**Result:** Distribution appears approximately normal.
+
+---
+
+## Summary Statistics by Line
+
+We calculate key descriptive statistics required by the brief.
+
+```{r}
+summary_table <- df_clean %>%
+group_by(Line) %>%
+summarise(
+Mean=mean(Temp),
+SD=sd(Temp),
+Min=min(Temp),
+Max=max(Temp),
+N=n()
+) %>% arrange(desc(Mean))
+
+summary_table
+```
+
+**Finding:** Bakerloo and Central Lines exhibit the highest mean temperatures.
+
+---
+
+## Excluding Sub-Surface Lines
+
+Older sub-surface lines are excluded to focus analysis on deep-level tunnels.
+
+```{r}
+deep_df <- df_clean %>%
+filter(!Line %in% c("District","Circle","Hammersmith & City","Metropolitan"))
+```
+
+---
+
+## Temperature Distributions by Line
+
+Violin and boxplots visualise temperature variability across deep-level lines.
+
+```{r}
+ggplot(deep_df,aes(Line,Temp))+
+geom_violin(fill="grey80")+
+geom_boxplot(width=.1)+
+coord_flip()
+```
+
+**Observation:** Bakerloo and Central consistently occupy the upper temperature ranges.
+
+---
+
+## Bakerloo vs Central — Annual Comparison
+
+Welch’s two-sample t-test compares annual temperatures between Bakerloo and Central.
+
+```{r}
+bc_all <- t.test(Temp~Line,data=deep_df %>% filter(Line %in% c("Bakerloo","Central")))
+tidy(bc_all)
+```
+
+We quantify practical impact using Cohen’s d.
+
+```{r}
+cohen.d(Temp ~ Line, data = deep_df %>% filter(Line %in% c("Bakerloo","Central")))
+```
+
+**Results:**
+
+- Mean difference ≈ 0.7°C  
+- p < 0.05 (statistically significant)  
+- Cohen’s d = 0.26 (small effect; 95% CI [0.02, 0.49])
+
+**Interpretation:** Although statistically detectable, the temperature gap is practically modest.
+
+---
+
+## Summer Comparison (May–August)
+
+To assess peak thermal stress, we repeat the test using summer months only.
+
+```{r}
+summer_df <- deep_df %>% filter(Month %in% c("May","June","July","August"))
+
+bc_summer <- t.test(Temp~Line,data=summer_df %>% filter(Line %in% c("Bakerloo","Central")))
+tidy(bc_summer)
+```
+
+**Result:** No statistically significant difference during summer (p ≈ 0.88), indicating comparable peak heat exposure.
+
+---
+
+# Part 2 — Management Report
+
+## Summary Table
+
+```{r}
+summary_table %>% gt()
+```
+
+---
+
+## Strategic Insight
+
+Differences observed annually diminish during summer peak periods, suggesting shared environmental constraints (tunnel depth, ventilation design, rolling stock heat retention). Heat exposure appears structurally driven rather than isolated to a single route.
+
+---
+
+## Recommendation
+
+While Bakerloo may serve as a reasonable pilot location due to marginally higher annual temperatures, meaningful passenger impact will likely require broader multi-line intervention.
+
+---
+
+# Limitations
+
+- Monthly averages mask short-term extreme heat events  
+- Observations are longitudinal; independence assumption may be mildly violated  
+- Passenger density not modelled  
+- Station-level variation excluded  
+
+---
+
+# Future Enhancements
+
+- Station-level sensors  
+- Passenger volume weighting  
+- Real-time dashboards  
+- Cost–benefit modelling  
+
+---
+
+# Skills Demonstrated
+
+- Data validation and anomaly detection (IQR filtering)
+- Exploratory data analysis
+- Statistical inference (Welch t-tests)
+- Effect size interpretation
+- Business translation of analytics
+- Infrastructure decision support
+
+---
+
+# Author
+
+Kaustubh Pawar  
+Portfolio: https://kaustubhpawar.com
