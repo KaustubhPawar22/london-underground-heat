@@ -1,4 +1,4 @@
-# London Underground Heat Exposure — Infrastructure Analytics Case Study
+# London Underground Heat Exposure: Infrastructure Analytics Case Study
 
 ## Overview
 
